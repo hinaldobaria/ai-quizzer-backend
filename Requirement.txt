@@ -1,0 +1,6 @@
+express 
+jsonwebtoken 
+pg 
+dotenv 
+uuid
+--save-dev nodemon

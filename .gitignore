@@ -1,0 +1,34 @@
+# Node.js
+node_modules/
+npm-debug.log
+
+# Environment variables
+.env
+.env.local
+.env*.backup
+
+# IDE/Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Docker
+docker-compose*.yml.backup
+*.dockerignore
+
+# Database
+*-data/
+dump.rdb
+
+# Logs
+logs/
+*.log
+
+# Redis (if used)
+redis-data/
+
+# Temporary files
+tmp/
+temp/
