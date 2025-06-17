@@ -115,9 +115,9 @@ This project was built as part of a backend development assessment and demonstra
 
 ## 🌟 Extra Points Earned
 
-- ✅ Email notifications with suggestions
-- ✅ AI-powered hint generator
-- ✅ Retry mechanism
-- ✅ Dockerized deployment
+✅ Email notifications with suggestions
+✅ AI-powered hint generator
+✅ Retry mechanism
+✅ Dockerized deployment
 
 ---
