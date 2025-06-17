@@ -2,7 +2,6 @@ const Groq = require("groq-sdk");
 const groq = new Groq({
   apiKey: process.env.GROQ_API_KEY
 });
-const redisService = require('./redis.service');
 
 const ACTIVE_MODEL = "llama3-70b-8192";
 const QUIZ_PROMPT_TEMPLATE = `As an expert quiz generator, create a {difficulty} level quiz for grade {grade} about {subject}.
@@ -36,16 +35,7 @@ The hint should:
 Return just the hint text without any additional formatting or explanation.`;
 
 async function generateQuiz(grade_level, subject, difficulty, total_questions = 5) {
-  const cacheKey = `quiz:${grade_level}:${subject}:${difficulty}:${total_questions}`;
-  
   try {
-    // Check cache
-    const cachedQuiz = await redisService.get(cacheKey);
-    if (cachedQuiz) {
-      console.log(`Cache HIT for ${cacheKey}`);
-      return JSON.parse(cachedQuiz);
-    }
-
     // Generate prompt
     const prompt = QUIZ_PROMPT_TEMPLATE
       .replace('{grade}', grade_level)
@@ -64,15 +54,11 @@ async function generateQuiz(grade_level, subject, difficulty, total_questions = 
 
     const content = completion.choices[0]?.message?.content;
     const quiz = JSON.parse(content);
-    
+
     // Validate structure
     if (!quiz?.questions?.length || !quiz.title) {
       throw new Error("Invalid quiz format from AI");
     }
-
-    // Cache result
-    await redisService.setEx(cacheKey, 3600, JSON.stringify(quiz));
-    console.log(`Cache SET for ${cacheKey}`);
 
     return quiz;
   } catch (err) {
@@ -82,15 +68,7 @@ async function generateQuiz(grade_level, subject, difficulty, total_questions = 
 }
 
 async function generateHint(question) {
-  const cacheKey = `hint:${question.substring(0, 50).replace(/\s+/g, '_')}`;
-  
   try {
-    // Check cache
-    const cachedHint = await redisService.get(cacheKey);
-    if (cachedHint) {
-      return cachedHint;
-    }
-
     // Generate prompt
     const prompt = HINT_PROMPT_TEMPLATE.replace('{question}', question);
 
@@ -107,9 +85,6 @@ async function generateHint(question) {
       throw new Error("No hint generated");
     }
 
-    // Cache result
-    await redisService.setEx(cacheKey, 86400, hint); // Cache for 24 hours
-    
     return hint;
   } catch (err) {
     console.error("AI Hint generation error:", err);
@@ -118,15 +93,7 @@ async function generateHint(question) {
 }
 
 async function generateImprovementSuggestions({ quiz, score, total, weakAreas = [] }) {
-  const cacheKey = `suggestions:${quiz}:${score}:${total}:${weakAreas.join(',')}`;
-  
   try {
-    // Check cache
-    const cachedSuggestions = await redisService.get(cacheKey);
-    if (cachedSuggestions) {
-      return cachedSuggestions;
-    }
-
     let prompt;
     if (weakAreas.length > 0) {
       prompt = `The student scored ${score}/${total} on a ${quiz} quiz. 
@@ -149,9 +116,6 @@ async function generateImprovementSuggestions({ quiz, score, total, weakAreas = 
       throw new Error("No suggestions generated");
     }
 
-    // Cache result
-    await redisService.setEx(cacheKey, 86400, suggestions); // Cache for 24 hours
-    
     return suggestions;
   } catch (err) {
     console.error("AI Suggestions generation error:", err);

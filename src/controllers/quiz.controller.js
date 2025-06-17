@@ -1,110 +1,209 @@
-// src/controllers/quiz.controller.js
-const { v4: uuidv4 } = require('uuid');
-const pool = require('../db/connect');
+const { getDB } = require('../db/connect');
 const { generateQuiz, generateHint } = require('../utils/services/ai.service');
-const redisService = require('../utils/services/redis.service');
 
-const CACHE_TIMEOUT = 3600; // 1 hour
+const { ObjectId } = require('mongodb');
+const { sendEmail } = require('../utils/services/email.service');
 
-const getCacheKey = (type, ...args) => `${type}:${args.join(':')}`;
-
+// Create new quiz
 const createQuiz = async (req, res) => {
   try {
+    const db = await getDB();
     const { grade_level, subject, difficulty, total_questions } = req.body;
 
-    // Input validation
-    if (!grade_level || !subject) {
-      return res.status(400).json({ error: 'Missing required fields' });
-    }
-
-    const cacheKey = getCacheKey('quiz', grade_level, subject, difficulty);
-    
-    // Check cache with error handling
-    const cachedQuiz = await redisService.get(cacheKey);
-    if (cachedQuiz) {
-      console.log(`Cache HIT for ${cacheKey}`);
-      return res.json({ 
-        message: 'Quiz retrieved from cache', 
-        quiz: JSON.parse(cachedQuiz) 
-      });
-    }
-
-    // Generate new quiz
     const aiQuiz = await generateQuiz(grade_level, subject, difficulty, total_questions || 5);
+    
     const quiz = {
-      id: uuidv4(),
       title: aiQuiz.title || `${subject} Quiz for Grade ${grade_level}`,
       grade_level,
       subject,
       difficulty,
       total_questions: aiQuiz.questions.length,
       max_score: aiQuiz.questions.length,
-      questions: aiQuiz.questions
+      questions: aiQuiz.questions,
+      created_at: new Date()
     };
 
-    // DB Insert
-    const result = await pool.query(
-      `INSERT INTO quizzes 
-       (id, title, grade_level, subject, difficulty, total_questions, max_score, questions)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-       RETURNING *`,
-      [
-        quiz.id, quiz.title, quiz.grade_level, 
-        quiz.subject, quiz.difficulty,
-        quiz.total_questions, quiz.max_score, 
-        JSON.stringify(quiz.questions)
-      ]
-    );
-
-    // Cache with fallback
-    await redisService.setEx(cacheKey, CACHE_TIMEOUT, JSON.stringify(quiz));
-    console.log(`Cache SET for ${cacheKey}`);
-
-    res.status(201).json({ message: 'Quiz created', quiz: result.rows[0] });
+    const result = await db.collection('quizzes').insertOne(quiz);
+    res.status(201).json({ 
+      message: 'Quiz created', 
+      quiz: { id: result.insertedId, ...quiz }
+    });
   } catch (err) {
     console.error('Error creating quiz:', err);
     res.status(500).json({ 
       error: 'Failed to create quiz',
-      ...(process.env.NODE_ENV === 'development' && { details: err.message })
+      details: process.env.NODE_ENV === 'development' ? err.message : undefined
     });
   }
 };
 
-const getHint = async (req, res) => {
-  try {
-    const { question, quizId } = req.body;
-    
-    if (!question || !quizId) {
-      return res.status(400).json({ error: 'Question and quizId are required' });
-    }
+// Submit quiz answers
+const submitQuiz = async (req, res) => {
+  const { quizId, answers } = req.body;
+  const userId = req.user.id;
+  const db = await getDB();
 
-    const cacheKey = `hint:${quizId}:${question.substring(0, 20)}`;
-    const cachedHint = await redisService.get(cacheKey);
-    
-    if (cachedHint) {
-      return res.status(200).json({ 
-        message: 'Hint retrieved from cache',
-        hint: cachedHint 
+  try {
+    // Check for recent submission
+    const recentSubmission = await db.collection('submissions').findOne({
+      user_id: new ObjectId(userId),
+      quiz_id: new ObjectId(quizId),
+      submitted_at: { $gt: new Date(Date.now() - 5 * 60 * 1000) }
+    });
+
+    if (recentSubmission) {
+      return res.status(429).json({ 
+        error: "You've already submitted this quiz recently" 
       });
     }
 
-    const hint = await generateHint(question);
-    
-    await pool.query(
-      `INSERT INTO hints (question_id, quiz_id, hint_text)
-       VALUES ($1, $2, $3)`,
-      [question.substring(0, 50), quizId, hint]
-    );
+    // Get quiz and calculate score
+    const quiz = await db.collection('quizzes').findOne({ 
+      _id: new ObjectId(quizId) 
+    });
 
-    await redisService.setEx(cacheKey, CACHE_TIMEOUT, hint);
-    res.status(200).json({ hint });
+    if (!quiz) return res.status(404).json({ error: "Quiz not found" });
+
+    const { questions } = quiz;
+    let score = 0;
+    const detailedResults = questions.map((q, i) => {
+      const isCorrect = checkAnswer(q.answer, answers[i]);
+      if (isCorrect) score++;
+      return {
+        question: q.question,
+        userAnswer: answers[i],
+        correctAnswer: q.answer,
+        isCorrect,
+        explanation: q.explanation
+      };
+    });
+
+    // Store submission
+    const submission = {
+      user_id: new ObjectId(userId),
+      quiz_id: new ObjectId(quizId),
+      answers,
+      score,
+      submitted_at: new Date(),
+      is_retry: false
+    };
+
+    const result = await db.collection('submissions').insertOne(submission);
+
+    // Send email notification
+    try {
+      // Get user email
+      const user = await db.collection('users').findOne({ _id: new ObjectId(userId) });
+      if (user && user.email) {
+        // Only send incorrect answers for suggestions
+        const incorrectAnswers = detailedResults.filter(r => !r.isCorrect);
+        await require('../utils/services/email.service')
+          .sendQuizResults(user.email, result.insertedId, quiz.title, score, questions.length, incorrectAnswers);
+      }
+    } catch (emailErr) {
+      console.error('Failed to send quiz result email:', emailErr);
+    }
+    
+    res.status(200).json({
+      message: "Quiz submitted successfully",
+      score,
+      total: questions.length,
+      detailedResults
+    });
+
   } catch (err) {
-    console.error('Error getting hint:', err);
+    console.error("Submission error:", err);
+    res.status(500).json({ error: "Server error during submission" });
+  }
+};
+
+// Helper function for answer checking
+function checkAnswer(correctAnswer, userAnswer) {
+  if (typeof correctAnswer === 'number') {
+    return userAnswer === correctAnswer;
+  }
+  return String(userAnswer).trim().toLowerCase() === 
+         String(correctAnswer).trim().toLowerCase();
+}
+
+// Get quiz results
+const getResults = async (req, res) => {
+  try {
+    const db = await getDB();
+    const userId = req.user.id;
+    const { from, to, grade, subject, minScore, maxScore } = req.query;
+
+    const pipeline = [
+      { $match: { user_id: new ObjectId(userId) } },
+      { $lookup: {
+        from: 'quizzes',
+        localField: 'quiz_id',
+        foreignField: '_id',
+        as: 'quiz'
+      }},
+      { $unwind: '$quiz' }
+    ];
+
+    // Add filters to pipeline...
+    const results = await db.collection('submissions')
+      .aggregate(pipeline)
+      .toArray();
+
+    res.json(results);
+  } catch (err) {
+    console.error('Results error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+};
+
+// Get hint for question
+const getHint = async (req, res) => {
+  try {
+    const { question, quizId } = req.body;
+    const hint = await generateHint(question);
+    res.json({ hint });
+  } catch (err) {
     res.status(500).json({ error: 'Failed to generate hint' });
   }
 };
 
-module.exports = { 
+// Retry quiz
+const retryQuiz = async (req, res) => {
+  try {
+    const db = await getDB();
+    const { submissionId } = req.params;
+    const userId = req.user.id;
+
+    const original = await db.collection('submissions').findOne({
+      _id: new ObjectId(submissionId),
+      user_id: new ObjectId(userId)
+    });
+
+    if (!original) return res.status(404).json({ error: "Submission not found" });
+
+    const newSubmission = {
+      ...original,
+      submitted_at: new Date(),
+      is_retry: true,
+      original_submission_id: original._id
+    };
+    delete newSubmission._id;
+
+    const result = await db.collection('submissions').insertOne(newSubmission);
+    res.json({
+      message: "Quiz retried successfully",
+      submissionId: result.insertedId
+    });
+  } catch (err) {
+    console.error("Retry error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
+module.exports = {
   createQuiz,
-  getHint
+  submitQuiz,
+  getResults,
+  getHint,
+  retryQuiz
 };

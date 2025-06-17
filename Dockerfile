@@ -1,20 +1,17 @@
 # Use official Node 21 image
-FROM node:21-alpine
+FROM node:21
 
-# Create app directory
-WORKDIR /usr/src/app
+# Set working directory
+WORKDIR /app
 
-# Install dependencies (including dev dependencies for building)
+# Copy package files and install dependencies
 COPY package*.json ./
-RUN npm install
+RUN npm install --production
 
-# Bundle app source
+# Copy the rest of the code
 COPY . .
 
-# Build the app (if needed)
-# RUN npm run build
-
-# Expose port
+# Expose the port (make sure it matches your .env PORT)
 EXPOSE 5000
 
 # Start the app

@@ -1,8 +1,22 @@
-const { Pool } = require('pg');
+const { MongoClient } = require('mongodb');
 require('dotenv').config();
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-});
+let client;
+let db;
 
-module.exports = pool;
+const connectDB = async () => {
+  if (!client) {
+    client = new MongoClient(process.env.MONGODB_URI);
+    await client.connect();
+    db = client.db('ai_quizzer');
+    console.log('MongoDB connected successfully');
+  }
+  return db;
+};
+
+const getDB = () => {
+  if (!db) throw new Error('Database not initialized');
+  return db;
+};
+
+module.exports = { connectDB, getDB };

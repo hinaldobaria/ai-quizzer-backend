@@ -1,8 +1,9 @@
 // src/utils/services/email.service.js
 const nodemailer = require('nodemailer');
 const { generateImprovementSuggestions } = require('./ai.service');
-const pool = require('../../db/connect');
+const { getDB } = require('../../db/connect');
 const validator = require('validator');
+const { ObjectId } = require('mongodb');
 
 class EmailService {
   constructor() {
@@ -37,20 +38,20 @@ class EmailService {
     try {
       const suggestions = await this.generateSuggestions(quizTitle, score, totalQuestions, incorrectAnswers);
       const percentage = Math.round((score / totalQuestions) * 100);
-      
+
       const mailOptions = this.buildEmailOptions(
-        userEmail, 
-        quizTitle, 
-        score, 
-        totalQuestions, 
-        percentage, 
-        incorrectAnswers, 
+        userEmail,
+        quizTitle,
+        score,
+        totalQuestions,
+        percentage,
+        incorrectAnswers,
         suggestions
       );
 
       const info = await this.transporter.sendMail(mailOptions);
       await this.recordNotification(submissionId, true);
-      
+
       console.log(`Email sent to ${userEmail} for submission ${submissionId}`);
       return { success: true, messageId: info.messageId };
     } catch (error) {
@@ -85,19 +86,19 @@ class EmailService {
   buildTextEmail(quizTitle, score, totalQuestions, percentage, incorrectAnswers, suggestions) {
     let text = `Quiz: ${quizTitle}\n`;
     text += `Score: ${score}/${totalQuestions} (${percentage}%)\n\n`;
-    
+
     if (incorrectAnswers.length > 0) {
       text += `Areas to Improve:\n`;
-      text += incorrectAnswers.map(a => 
+      text += incorrectAnswers.map(a =>
         `- ${a.question}\n  Your answer: ${a.userAnswer}\n  Correct answer: ${a.correctAnswer}` +
         (a.explanation ? `\n  Explanation: ${a.explanation}` : '')
       ).join('\n\n');
       text += '\n\n';
     }
-    
+
     text += `Suggestions for Improvement:\n${suggestions}\n\n`;
     text += `Thank you for using AI Quizzer!`;
-    
+
     return text;
   }
 
@@ -156,11 +157,19 @@ class EmailService {
 
   async recordNotification(submissionId, success, errorMessage = null) {
     try {
-      await pool.query(
-        `INSERT INTO notifications (user_id, submission_id, email_sent, sent_at, error_message)
-         VALUES ((SELECT user_id FROM submissions WHERE id = $1), $1, $2, NOW(), $3)`,
-        [submissionId, success, errorMessage]
-      );
+      const db = getDB();
+      // Find the submission to get user_id
+      const submission = await db.collection('submissions').findOne({
+        _id: typeof submissionId === 'string' ? new ObjectId(submissionId) : submissionId
+      });
+      if (!submission) return;
+      await db.collection('notifications').insertOne({
+        user_id: submission.user_id,
+        submission_id: submissionId,
+        email_sent: success,
+        sent_at: new Date(),
+        error_message: errorMessage
+      });
     } catch (dbError) {
       console.error('Failed to record notification:', dbError);
     }

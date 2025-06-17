@@ -1,28 +1,33 @@
-const redis = require('../utils/services/redis.service');
-const { RateLimiterRedis } = require('rate-limiter-flexible');
 
-// Configure rate limiter
-const rateLimiter = new RateLimiterRedis({
-  storeClient: redis.client,
-  keyPrefix: 'rate_limit',
-  points: 100, // 100 requests
-  duration: 60, // per 60 seconds
-  blockDuration: 60 * 5 // block for 5 minutes if exceeded
-});
+
+const rateLimitMap = new Map();
+
+const WINDOW_SIZE = 60 * 1000; // 1 minute
+const MAX_REQUESTS = 100;
 
 const rateLimiterMiddleware = (req, res, next) => {
   const key = req.user ? `user_${req.user.id}` : `ip_${req.ip}`;
-  
-  rateLimiter.consume(key)
-    .then(() => {
-      next();
-    })
-    .catch(() => {
-      res.status(429).json({
-        error: "Too many requests",
-        message: "Please wait a few minutes before making more requests"
-      });
+  const now = Date.now();
+
+  if (!rateLimitMap.has(key)) {
+    rateLimitMap.set(key, []);
+  }
+  const timestamps = rateLimitMap.get(key);
+
+  // Remove timestamps older than window
+  while (timestamps.length && now - timestamps[0] > WINDOW_SIZE) {
+    timestamps.shift();
+  }
+
+  if (timestamps.length >= MAX_REQUESTS) {
+    return res.status(429).json({
+      error: "Too many requests",
+      message: "Please wait a few minutes before making more requests"
     });
+  }
+
+  timestamps.push(now);
+  next();
 };
 
 module.exports = rateLimiterMiddleware;

@@ -1,61 +1,81 @@
 const { generateToken } = require('../utils/jwt');
-const pool = require('../db/connect');
+const User = require('../models/user.model');
 const bcrypt = require('bcrypt');
-const { validationResult } = require('express-validator');
 
 const login = async (req, res) => {
-  // Validate input
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({ errors: errors.array() });
-  }
-
-  const { username, password } = req.body;
-
   try {
-    // Check if user exists
-    let user = await pool.query(
-      'SELECT * FROM users WHERE username = $1',
-      [username]
-    );
-
-    if (user.rows.length === 0) {
-      // Create new user with hashed password
-      const hashedPassword = await bcrypt.hash(password, 10);
-      const email = `${username.replace(/\s+/g, '_').toLowerCase()}@aiquizzer.com`;
-      
-      user = await pool.query(
-        `INSERT INTO users (username, password, email)
-         VALUES ($1, $2, $3)
-         RETURNING id, username, email`,
-        [username, hashedPassword, email]
-      );
-    } else {
-      // Verify password for existing user
-      const isValid = await bcrypt.compare(password, user.rows[0].password);
-      if (!isValid) {
-        return res.status(401).json({ error: 'Invalid credentials' });
-      }
+    const { username, password } = req.body;
+    
+    // Find user
+    const user = await User.findByUsername(username);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
     }
 
+    // Verify password
+    const isValid = await bcrypt.compare(password, user.password);
+    if (!isValid) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    // Generate token
     const token = generateToken({ 
-      id: user.rows[0].id,
-      username: user.rows[0].username 
+      id: user._id.toString(),
+      username: user.username 
     });
 
-    return res.json({ 
+    res.json({ 
       message: 'Login successful', 
       token,
       user: {
-        id: user.rows[0].id,
-        username: user.rows[0].username,
-        email: user.rows[0].email
+        id: user._id,
+        username: user.username,
+        email: user.email
       }
     });
   } catch (err) {
-    console.error('Login error:', err);
-    return res.status(500).json({ error: 'Server error during login' });
+    res.status(500).json({ error: 'Server error during login' });
   }
 };
 
-module.exports = { login };
+const register = async (req, res) => {
+  try {
+    const { username, password, email } = req.body;
+
+    // Check if user already exists
+    const existing = await User.findByUsername(username);
+    if (existing) {
+      return res.status(409).json({ error: 'Username already taken' });
+    }
+
+    // Hash password
+    const hashed = await bcrypt.hash(password, 10);
+
+    // Create user
+    const userId = await User.create({
+      username,
+      password: hashed,
+      email,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    });
+
+    // Generate token
+    const token = generateToken({ id: userId.toString(), username });
+
+    res.status(201).json({
+      message: 'Registration successful',
+      token,
+      user: {
+        id: userId,
+        username,
+        email
+      }
+    });
+  } catch (err) {
+    console.error('Registration error:', err);
+    res.status(500).json({ error: 'Server error during registration' });
+  }
+};
+
+module.exports = { login, register };
